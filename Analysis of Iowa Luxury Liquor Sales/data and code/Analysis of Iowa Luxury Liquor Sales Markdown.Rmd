@@ -1,0 +1,157 @@
+---
+title: "Final Project"
+author: "Andres Cojuangco"
+date: "5/17/2021"
+output: html_document
+---
+```{r}
+##All Libraries
+
+#Tidyverse libraries
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(sf)
+```
+```{r}
+## Cleaning Data for ESRI Tapestry (2017) Data Set
+load("iowa_tap_2017.RData", verbose=T)
+
+
+#Creating Dummy Variables for Rural (0), Suburban (1) and Urban Settings (2)
+ia_tapestry$zc_category[ia_tapestry$TURBZNAME == "Rural" | ia_tapestry$TURBZNAME == "Semirural"] <- 0
+
+ia_tapestry$zc_category[ia_tapestry$TURBZNAME == "Suburban Periphery"] <- 1
+
+ia_tapestry$zc_category[ia_tapestry$TURBZNAME == "Urban Periphery" | ia_tapestry$TURBZNAME == "Metro Cities" | ia_tapestry$TURBZNAME == "Principal Urban Center"] <- 2
+
+names(ia_tapestry)[names(ia_tapestry) == "ID"] <- "zip_code"
+
+#Filtering out columns from ia_tapestry that we don't need and joining it to bigbrands_df
+
+main_df = ia_tapestry %>% select(NAME, zc_category, zip_code) %>% inner_join(bigbrands_df, ia_tapestry, by = "zip_code")
+
+main_df
+
+```
+```{r}
+## Calculating the statewide percentage of sales for big and small brands 
+
+ttl_sales_per_year <- main_df %>% group_by(year, is_brand) %>% summarize(t_sales = sum(sale_dollars)) %>% select(year, is_brand, t_sales) %>% sf::st_drop_geometry()
+
+pivot_ttl_sales_per_year <- ttl_sales_per_year %>% pivot_wider(names_from = is_brand, values_from = t_sales) 
+
+names(pivot_ttl_sales_per_year)[names(pivot_ttl_sales_per_year) == "0"] <- "Non_luxury_Brands"
+names(pivot_ttl_sales_per_year)[names(pivot_ttl_sales_per_year) == "1"] <- "Luxury_Brands"
+```
+
+```{r}
+#Line Graph Luxury vs Non
+pivot_ttl_sales_per_year
+ggplot(pivot_ttl_sales_per_year, aes(x = year)) +  geom_line(aes(y = Luxury_Brands, color = "Luxury_Brands")) + 
+  geom_line(aes(y = Non_luxury_Brands, color = "Non_luxury_Brands")) + expand_limits(y = 0) 
+```
+
+```{r}
+##calculating total sales for each zip code for 2017
+t_sales_zip <- main_df %>% filter(year == 2017) %>% group_by(zip_code) %>% summarize(tsales_zip = sum(sale_dollars)) %>% sf::st_drop_geometry()
+
+df_filter_2017 <- main_df %>% filter(year == 2017) %>% sf::st_drop_geometry()
+
+df_2017 <- merge(t_sales_zip, df_filter_2017, by.x = "zip_code", by.y = "zip_code")
+
+t_sales_zip
+df_filter_2017
+df_2017
+```
+
+```{r}
+#Total Sales for 2017
+
+ttl_sales_2017 <- ttl_sales_per_year %>% filter(year == 2017) 
+ttl_sales_2017_val <- sum(ttl_sales_2017$t_sales)
+
+#Rearranging columns for df_2017
+
+col_order <- c("NAME", "zc_category", "zip_code", "year", "is_brand", "volume_sold", "sale_dollars", "tsales_zip")
+
+df_2017 <- df_2017[,col_order]
+
+#Rows with zip codes that only appear once and mutating the items that only appear once to make is_brand == 1 sales
+
+once <- subset(df_2017, ave(NAME,NAME,FUN=length) == 1) %>% mutate(is_brand = 1, volume_sold = 0, sale_dollars = 0)
+
+#Adding the missing rows (once) to the ttl_sales_2017
+
+df_2017_combined <- rbind(df_2017,once)
+df_2017 <- df_2017_combined %>% arrange(zip_code)
+
+#Making df for choropleth and adding column for percentage of total sales for luxury and small brands and filtering out small brands
+
+choro_2017_1 <- df_2017 %>% filter(is_brand == 1) %>% mutate(percentage_luxsales = (sale_dollars/ttl_sales_2017_val)*100)
+
+top_lux_buyers <- arrange(choro_2017_1, desc(percentage_luxsales)) %>% select("NAME", "zc_category", "zip_code", "sale_dollars", "percentage_luxsales")
+head(top_lux_buyers)
+```
+```{r}
+##Making the Choropleth for the percentage of total sales spent on luxury brands
+
+ia2 = ia_tapestry %>% inner_join(choro_2017_1, by="zip_code")
+
+ggplot() + geom_sf(data = ia2, aes(fill=percentage_luxsales)) +
+  scale_fill_gradient2(low = 'blue', high='red', mid='white')
+
+
+```
+```{r}
+##NOTE THAT THIS PART OF THE CODE WAS JUST FOR EXPLORATION AND NOT INCLUDED IN THE PRESENTATION
+##Making the Time Series for Luxury Brands
+
+#Creating column for date and cleaning
+TimeSeries_df$date <- as.Date(with(TimeSeries_df, paste(year, month, day,sep="-")), "%Y-%m-%d")
+
+#Filtering out the unecessary zip codes, dates, and
+top_zip_codes <- c(50314, 50320, 52001, 52240, 52804, 50703) 
+
+#2021 onwards for luxury brands
+TimeSeries_df_1_2020o <- TimeSeries_df %>% filter(zip_code %in% top_zip_codes, date >= as.Date("2020-01-01") , is_brand == 1)
+
+#2020 for luxury brands
+TimeSeries_df_1_2020 <- TimeSeries_df %>% filter(zip_code %in% top_zip_codes, date >= as.Date("2020-01-01") & date <= as.Date("2020-12-31"), is_brand == 1)
+
+#2021 for luxury brands
+TimeSeries_df_1_2021 <- TimeSeries_df %>% filter(zip_code %in% top_zip_codes, date >= as.Date("2021-01-01"), is_brand == 1)
+
+TimeSeries_df
+
+```
+```{r}
+#2020 Luxury
+general_time_2020 <- TimeSeries_df_1_2020 %>% group_by(month = lubridate::floor_date(date, "month"))
+ggplot(general_time, aes(x = date, y = sale_dollars)) + geom_line() + expand_limits(y = 0)
+
+general_highest_sales_2020 <- arrange(general_time_2020, desc(sale_dollars))
+general_highest_sales_2020
+```
+
+```{r}
+#2021 luxury
+
+general_time_2021 <- TimeSeries_df_1_2021 %>% group_by(month = lubridate::floor_date(date, "month"))
+ggplot(general_time, aes(x = date, y = sale_dollars)) + geom_line() + expand_limits(y = 0)
+
+general_highest_sales <- arrange(general_time, desc(sale_dollars))
+general_highest_sales
+
+```
+```{r}
+#2020 onwards luxury
+general_time_2020o <- TimeSeries_df_1_2020o %>% group_by(month = lubridate::floor_date(date, "month"))
+ggplot(general_time, aes(x = date, y = sale_dollars)) + geom_line() + expand_limits(y = 0)
+
+general_highest_sales_2020o <- arrange(general_time_2020o, desc(sale_dollars))
+general_highest_sales_2020o
+
+```
